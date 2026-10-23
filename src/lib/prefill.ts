@@ -18,6 +18,40 @@ const isBlank = (v: string | string[]) =>
 export const viewformUrl = (formId: string) =>
   `https://docs.google.com/forms/d/e/${formId}/viewform`
 
+/**
+ * Stand-ins a preset can hold for a date/time field, resolved to the current
+ * local date/time each time a link is built — a daily form keeps one preset.
+ */
+export const TODAY = '__today__'
+export const NOW = '__now__'
+
+const live = (v: string | string[]) =>
+  v === TODAY ? new Date().toLocaleDateString('en-CA') // en-CA formats as YYYY-MM-DD
+  : v === NOW ? new Date().toTimeString().slice(0, 5)
+  : v
+
+/**
+ * What a saved preset no longer matches in the live form. Google silently drops
+ * a prefilled value it does not recognise, so these must be said out loud.
+ */
+export function presetIssues(schema: FormSchema, saved: Answers): string[] {
+  const byId = new Map(schema.fields.map((f) => [f.entryId, f]))
+  const out: string[] = []
+  for (const [id, a] of Object.entries(saved)) {
+    if (!a.auto || isBlank(a.value)) continue
+    const f = byId.get(id)
+    if (!f) {
+      out.push(`ข้อ entry.${id} ไม่มีในฟอร์มแล้ว`)
+      continue
+    }
+    if (f.choices.length === 0) continue
+    for (const v of asList(a.value)) {
+      if (v !== OTHER && !f.choices.includes(v)) out.push(`${f.title}: ไม่มีตัวเลือก "${v}" แล้ว`)
+    }
+  }
+  return out
+}
+
 /** File upload questions cannot be prefilled at all — Google refuses, by design. */
 export const prefillable = (f: Field) => f.type !== 'file'
 
@@ -26,7 +60,7 @@ function appendOne(p: URLSearchParams, f: Field, a: Answer) {
 
   if (f.type === 'date') {
     // Split suffixes, which is the shape Google's own "get prefilled link" emits.
-    const [y, m, d] = String(a.value).split('-')
+    const [y, m, d] = String(live(a.value)).split('-')
     if (!y || !m || !d) return
     p.append(`${key}_year`, String(Number(y)))
     p.append(`${key}_month`, String(Number(m)))
@@ -35,7 +69,7 @@ function appendOne(p: URLSearchParams, f: Field, a: Answer) {
   }
 
   if (f.type === 'time') {
-    const [h, min] = String(a.value).split(':')
+    const [h, min] = String(live(a.value)).split(':')
     if (!h || !min) return
     p.append(`${key}_hour`, String(Number(h)))
     p.append(`${key}_minute`, String(Number(min)))
@@ -83,7 +117,7 @@ export function filledValues(schema: FormSchema, answers: Answers) {
     const a = answers[f.entryId]
     if (!a?.auto || !prefillable(f) || isBlank(a.value)) continue
     const label = f.rowLabel ? `${f.title} — ${f.rowLabel}` : f.title
-    const shown = asList(a.value).map((v) => (v === OTHER ? `อื่นๆ: ${a.other ?? ''}` : v))
+    const shown = asList(live(a.value)).map((v) => (v === OTHER ? `อื่นๆ: ${a.other ?? ''}` : v))
     out[label] = Array.isArray(a.value) ? shown : shown[0]
   }
   return out

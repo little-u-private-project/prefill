@@ -1,4 +1,4 @@
-// The contract both halves agree on. The Netlify functions import these types
+// The contract both halves agree on. The Worker (worker/) imports these types
 // too, so the shape can only drift in one place.
 
 export type FieldType =
@@ -63,7 +63,7 @@ export type HistoryRow = {
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init)
-  const body = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }))
+  const body: any = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }))
   if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`)
   return body as T
 }
@@ -77,8 +77,8 @@ const post = <T>(path: string, payload: object) =>
 
 export const discoverForm = (url: string) => post<FormSchema>('/api/discover-form', { url })
 
-// Everything sheet-shaped goes through one endpoint as {action, ...payload};
-// the function is a dumb authenticated proxy and stays that way.
+// Presets and history go through one endpoint as {action, ...payload};
+// worker/history.ts maps each action onto D1.
 const sheet = <T>(action: string, payload: object = {}) =>
   post<T>('/api/history', { action, ...payload })
 

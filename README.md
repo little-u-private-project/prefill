@@ -17,7 +17,7 @@ Single user, no accounts.
 3. Generating a link builds
    `…/viewform?usp=pp_url&entry.<id>=<value>…` and opens it. Review and submit
    inside Google Forms as usual.
-4. The values actually sent are appended to a Google Sheet as history.
+4. The values actually sent are appended to the history table in D1.
 
 The core requirement — "this question I want to answer myself" — needs no
 feature: a question left off `autofill` is simply absent from the query string,
@@ -26,112 +26,82 @@ so it arrives blank.
 The app never submits a form. It only prefills; the submit button stays with the
 human.
 
+For a form filled over and over:
+
+- **เปิดฟอร์มเลย** on a saved preset rediscovers the form, builds the link,
+  opens it and logs it in one click.
+- A date or time question can be set to **today / now**; the preset stores a
+  token and the real value is filled in each time a link is built.
+- When a preset no longer matches its form (a choice renamed, a question
+  removed), the app lists what Google would silently drop and opens the editor
+  instead of the form.
+- It installs to a phone's home screen (web app manifest + icons in `public/`).
+
+`npm run check` runs the self-check for the preset logic.
+
 ## Stack
 
-- React 19 + TypeScript + Vite (static)
-- Two Netlify Functions, for the only two things a browser cannot do: fetch a
-  cross-origin page, and hold a secret
-- Google Sheet as the datastore, reached through an Apps Script Web App —
-  no service account, no OAuth client, no `googleapis` dependency
+- React 19 + TypeScript + Vite, served as static assets by one Cloudflare Worker
+- The Worker runs only for `/api/*` — the two things a browser cannot do: fetch
+  a cross-origin page, and reach the database
+- Cloudflare D1 (SQLite) for presets and history, reached only through the
+  Worker's `DB` binding — no keys, no secrets, no environment variables
 
 ```
 browser ──▶ /api/discover-form ──▶ docs.google.com/forms/…/viewform
-        └─▶ /api/history       ──▶ Apps Script Web App ──▶ Google Sheet
+        └─▶ /api/history       ──▶ D1 (presets, history)
+everything else ──▶ static assets (no Worker run, free and unmetered)
 ```
+
+Schema: [`migrations/0001_init.sql`](migrations/0001_init.sql). Routing and
+the SPA fallback: [`wrangler.jsonc`](wrangler.jsonc).
 
 ## Develop
 
 ```sh
 npm install
+npx wrangler d1 migrations apply DB --local
 npm run dev
 ```
 
-Plain `vite`. Locally, the two functions are served at `/api/*` by a small dev
-middleware in [`vite.config.ts`](vite.config.ts) that hands them the same
-`Request`/`Response` pair Netlify's runtime does — so no Netlify CLI is needed
-just to work on the app. **This changes nothing about deployment:** the files in
-`netlify/functions/` are Netlify Functions and it is Netlify that runs them in
-production. See the `ponytail:` note in `vite.config.ts` for when the CLI is
-worth reaching for again.
+`npm run dev` is Vite with `@cloudflare/vite-plugin`, which runs `worker/` in
+the real Workers runtime against a local D1 (kept under `.wrangler/`). A fresh
+clone needs `npm run types` (or any build) once, so `worker-configuration.d.ts`
+exists for the editor.
 
-`npm run build` runs `tsc --noEmit` then `vite build`.
+`npm run build` runs `wrangler types`, `tsc -b` (app and worker configs) then
+`vite build`.
 
-## Deploy (Netlify)
+## Deploy (Cloudflare)
 
-Git-based deploy, so every push ships:
-
-1. Push this repo to GitHub (private is fine).
-2. Netlify › **Add new site › Import an existing project**, pick the repo.
-   [`netlify.toml`](netlify.toml) already declares everything — build command
-   `npm run build`, publish `dist`, functions `netlify/functions`, and the
-   `/api/*` rule — so the defaults Netlify offers need no editing.
-3. **Site configuration › Environment variables**: add `SHEET_API_URL` and
-   `SHEET_API_TOKEN` (same values as `.env`). Redeploy after adding them —
-   Netlify does not re-run a build just because a variable changed.
-
-The functions use the Netlify Functions v2 signature (a default-exported
-handler taking a `Request`, returning a `Response`) and are `.mts`, which
-Netlify bundles natively — no build step of their own.
-
-## Configure
-
-Two variables, obtained in completely different ways:
-
-| Variable | Where it comes from |
-|---|---|
-| `SHEET_API_TOKEN` | **You invent it.** Any random string. It is a shared password between this app and your Apps Script — nothing issues it. |
-| `SHEET_API_URL` | **Google gives it to you** when you deploy the Apps Script as a Web App. Ends in `/exec`. |
-
-Generate a token:
+One-time, on a new account:
 
 ```sh
-openssl rand -hex 32
+npx wrangler login
+npx wrangler d1 create prefill --location apac   # paste database_id into wrangler.jsonc
+npx wrangler d1 migrations apply DB --remote
 ```
 
-Both are read only inside `netlify/functions/`, never bundled into the client.
-Without them the app still reads forms and builds links — only presets and
-history fail, and they say so in their own banner rather than blocking anything.
-
-### 1. The Sheet half
-
-1. Create a spreadsheet (`sheets.new`). **Extensions › Apps Script**. Delete
-   the stub `myFunction`, paste all of [`apps-script/Code.gs`](apps-script/Code.gs), save.
-2. **Project Settings** (gear, left sidebar) **› Script properties › Add script
-   property**: name `TOKEN`, value = the string you generated. This must match
-   `SHEET_API_TOKEN` exactly or every call answers `bad token`.
-3. **Deploy › New deployment**, pick type **Web app** (gear icon next to
-   "Select type"). Execute as **Me**, who has access **Anyone**. Deploy.
-4. Google will ask you to authorize, then warn **"Google hasn't verified this
-   app"**. That is expected — the unverified app is your own script. Click
-   **Advanced › Go to (project name) (unsafe)** to continue. Stopping here is
-   the single most common place this setup stalls.
-5. Copy the **Web app URL** (ends in `/exec`) → that is `SHEET_API_URL`.
-   Open it in a browser: it should answer `{"ok":true,"service":"prefill sheet api"}`.
-
-The `presets` and `history` tabs are created on first write — no manual setup.
-
-**After any edit to `Code.gs`**, the live deployment does *not* update: go
-**Deploy › Manage deployments › (pencil) › Version: New version › Deploy**. The
-`/exec` URL stays the same. Forgetting this looks exactly like your edit having
-no effect.
-
-### 2. Local
+Then every release:
 
 ```sh
-cp .env.example .env
+npm run deploy
 ```
 
-Fill in both values, then **restart `npm run dev`** — they are read when the
-Vite config is evaluated, so a running server will not pick them up.
+A new migration file goes out with `npx wrangler d1 migrations apply DB --remote`
+before the deploy that needs it.
 
-`.env` is gitignored.
+Optional: Cloudflare dashboard › Workers & Pages › prefill › Settings › Builds,
+connect this repo to deploy on every push (build `npm run build`, deploy
+`npx wrangler deploy`).
 
-### 3. Netlify
+## Free tier
 
-**Site configuration › Environment variables › Add a variable**, add the same
-two. Then **trigger a redeploy** (Deploys › Trigger deploy › Deploy site) —
-Netlify does not rebuild just because a variable changed, so the site keeps
-serving the old build until you do.
+Workers Free gives 100,000 Worker runs a day and 10 ms CPU per run; only
+`/api/*` counts (`run_worker_first`), page and asset loads do not. D1 Free
+fails queries — rather than slowing down — once the daily row-read or
+row-write budget is spent, until midnight UTC; history reads are capped at the
+newest 1000 rows for that reason.
 
 ## Known limits
 
@@ -143,7 +113,7 @@ serving the old build until you do.
   published id and cannot be converted; paste the `/viewform` link.
 - **File upload questions can never be prefilled** (Google's rule, not this
   app's) and are shown as permanently manual.
-- **Anyone with the site URL can use it** and read the history. That is the
+- **Anyone with the site URL can use it** and read the history (the database itself is reachable only through the Worker). That is the
   accepted trade for a single-user tool with no login — so anything sensitive
   belongs in a *fill by hand* question, never in a preset.
 
@@ -155,5 +125,7 @@ Google with exactly the chosen answers prefilled and every other question blank.
 
 Not yet exercised against a real form: **grid** questions (row labels are read
 from an unverified array index, with a positional fallback), **date**/**time**
-splitting, the **"Other"** free-text option, **file upload** detection, and the
-whole **Sheet** path (presets and history), which needs a deployed Apps Script.
+splitting, the **"Other"** free-text option, and **file upload** detection.
+
+Presets and history on D1: every action exercised against the local Worker
+(upsert, delete, missing name, newest-first history, `'`/`;`/Thai round-trip).

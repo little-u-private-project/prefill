@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "prefill",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "not_found_handling": "single-page-application",
+    // Only API calls run the Worker; static requests stay free and off the daily quota.
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "prefill",
+      "database_id": "222217ef-5d39-4b1e-a47c-8de41e4defd9",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

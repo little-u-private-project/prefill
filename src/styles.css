@@ -75,3 +75,6 @@ dd { margin: 0; }
 .saved .open { flex: 0 0 auto; font-weight: 600; }
 .saved .meta { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .saved .x { border: 0; background: none; color: var(--soft); padding: .2rem .4rem; }
+.saved { flex-wrap: wrap; }
+.saved .go { padding: .3rem .8rem; font-size: .9rem; }
+.warn ul { margin: .4rem 0 0; padding-left: 1.2rem; }

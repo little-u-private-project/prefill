@@ -1,4 +1,4 @@
-import type { Field, FieldType, FormSchema } from '../../src/lib/api'
+import type { Field, FieldType, FormSchema } from '../src/lib/api'
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -149,7 +149,7 @@ export default async (req: Request) => {
 
   let url: unknown
   try {
-    url = (await req.json())?.url
+    url = ((await req.json()) as any)?.url
   } catch {
     return fail('body ต้องเป็น JSON')
   }

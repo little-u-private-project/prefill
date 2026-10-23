@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { Answer, Answers, Field, FormSchema, HistoryRow, Preset } from './lib/api'
 import * as api from './lib/api'
-import { OTHER, URL_WARN_AT, blankAnswers, buildPrefillUrl, filledValues, prefillable, viewformUrl } from './lib/prefill'
+import {
+  NOW, OTHER, TODAY, URL_WARN_AT, blankAnswers, buildPrefillUrl, filledValues, prefillable, presetIssues, viewformUrl,
+} from './lib/prefill'
 
 const TYPE_LABEL: Record<Field['type'], string> = {
   short: 'ข้อความสั้น',
@@ -51,10 +53,19 @@ function FieldEditor({ field, answer, onChange }: {
       return <textarea rows={3} value={value as string} onChange={(e) => set({ value: e.target.value })} />
 
     case 'date':
-      return <input type="date" value={value as string} onChange={(e) => set({ value: e.target.value })} />
-
-    case 'time':
-      return <input type="time" value={value as string} onChange={(e) => set({ value: e.target.value })} />
+    case 'time': {
+      const token = field.type === 'date' ? TODAY : NOW
+      const isLive = value === token
+      return (
+        <>
+          {!isLive && <input type={field.type} value={value as string} onChange={(e) => set({ value: e.target.value })} />}
+          <label className="choice">
+            <input type="checkbox" checked={isLive} onChange={(e) => set({ value: e.target.checked ? token : '' })} />
+            {field.type === 'date' ? 'ใช้วันที่วันนี้เสมอ' : 'ใช้เวลาตอนกดเสมอ'}
+          </label>
+        </>
+      )
+    }
 
     case 'checkbox': {
       const picked = (value as string[]) ?? []
@@ -118,6 +129,7 @@ export default function App() {
   const [error, setError] = useState('')
   const [sheetError, setSheetError] = useState('')
   const [lastUrl, setLastUrl] = useState('')
+  const [issues, setIssues] = useState<string[]>([])
 
   // The sheet is optional to *browse* a form — discovery works without it — so
   // its failure is reported separately and never blocks the main flow.
@@ -141,12 +153,35 @@ export default function App() {
       setAnswers(blankAnswers(s))
       setPresetName('')
       setLastUrl('')
+      setIssues([])
     })
+
+  /** Back to the start page (saved presets) without a reload. */
+  const clear = () => {
+    setSchema(null)
+    setAnswers({})
+    setFormUrl('')
+    setPresetName('')
+    setLastUrl('')
+    setError('')
+    setIssues([])
+  }
 
   const applyPreset = (p: Preset) => {
     if (!schema) return
     setAnswers(answersFor(schema, p))
     setPresetName(p.name)
+    setIssues(presetIssues(schema, p.answers))
+  }
+
+  /** Show a preset in the editor against a freshly fetched schema. */
+  const load = (s: FormSchema, p: Preset) => {
+    setSchema(s)
+    setAnswers(answersFor(s, p))
+    setPresetName(p.name)
+    setFormUrl(viewformUrl(p.formId))
+    setLastUrl('')
+    setIssues(presetIssues(s, p.answers))
   }
 
   /**
@@ -156,19 +191,57 @@ export default function App() {
    * apply. Uses the freshly fetched schema rather than waiting for state.
    */
   const openPreset = (p: Preset) =>
-    run(async () => {
-      const s = await api.discoverForm(viewformUrl(p.formId))
-      setSchema(s)
-      setAnswers(answersFor(s, p))
-      setPresetName(p.name)
-      setFormUrl(viewformUrl(p.formId))
-      setLastUrl('')
+    run(async () => load(await api.discoverForm(viewformUrl(p.formId)), p))
+
+  // Opening the form is the point; a history write that fails must not look
+  // like the link failed.
+  const log = async (s: FormSchema, a: Answers, preset: string, url: string) => {
+    try {
+      await api.logFill({ formId: s.formId, formTitle: s.title, preset, values: filledValues(s, a), url })
+      await refreshSheet()
+    } catch (e) {
+      setSheetError(`เปิดลิงก์แล้ว แต่บันทึกประวัติไม่ได้: ${(e as Error).message}`)
+    }
+  }
+
+  /**
+   * One click from the saved list: rediscover, build, open, log. The tab is
+   * opened *before* the await so the click still counts as a user gesture — a
+   * window.open after a network round-trip gets popup-blocked — and pointed at
+   * the link once it is built. A preset that no longer matches its form opens
+   * in the editor instead, with the reasons shown.
+   */
+  const quickOpen = (p: Preset) => {
+    const win = window.open('', '_blank')
+    return run(async () => {
+      try {
+        const s = await api.discoverForm(viewformUrl(p.formId))
+        if (presetIssues(s, p.answers).length) {
+          win?.close()
+          return load(s, p)
+        }
+        const a = answersFor(s, p)
+        const url = buildPrefillUrl(s, a)
+        if (win) {
+          win.opener = null
+          win.location.href = url
+        } else {
+          load(s, p)
+          setLastUrl(url)
+        }
+        await log(s, a, p.name, url)
+      } catch (e) {
+        win?.close()
+        throw e
+      }
     })
+  }
 
   const save = () =>
     run(async () => {
       if (!schema || !presetName.trim()) throw new Error('ตั้งชื่อ preset ก่อน')
       await api.savePreset({ name: presetName.trim(), formId: schema.formId, formTitle: schema.title, answers })
+      setIssues(presetIssues(schema, answers))
       await refreshSheet()
     })
 
@@ -185,20 +258,7 @@ export default function App() {
       const url = buildPrefillUrl(schema, answers)
       setLastUrl(url)
       window.open(url, '_blank', 'noopener')
-      // Opening the form is the point; a history write that fails must not look
-      // like the link failed.
-      try {
-        await api.logFill({
-          formId: schema.formId,
-          formTitle: schema.title,
-          preset: presetName,
-          values: filledValues(schema, answers),
-          url,
-        })
-        await refreshSheet()
-      } catch (e) {
-        setSheetError(`เปิดลิงก์แล้ว แต่บันทึกประวัติไม่ได้: ${(e as Error).message}`)
-      }
+      await log(schema, answers, presetName, url)
     })
 
   const autoCount = schema
@@ -218,7 +278,7 @@ export default function App() {
         </nav>
       </header>
 
-      {sheetError && <p className="warn">Google Sheet: {sheetError}</p>}
+      {sheetError && <p className="warn">ฐานข้อมูล: {sheetError}</p>}
       {error && <p className="err">{error}</p>}
 
       {tab === 'history' ? (
@@ -249,6 +309,7 @@ export default function App() {
               onKeyDown={(e) => e.key === 'Enter' && discover()}
             />
             <button onClick={discover} disabled={busy || !formUrl}>อ่านฟอร์ม</button>
+            {(schema || formUrl) && <button onClick={clear} disabled={busy}>ล้าง</button>}
           </div>
 
           {!schema && presets.length > 0 && (
@@ -256,10 +317,11 @@ export default function App() {
               <h2>ที่บันทึกไว้</h2>
               {presets.map((p) => (
                 <div key={p.name} className="card saved">
-                  <button className="open" onClick={() => openPreset(p)} disabled={busy}>
+                  <button className="open" title="แก้ preset" onClick={() => openPreset(p)} disabled={busy}>
                     {p.name}
                   </button>
                   <span className="meta">{p.formTitle || p.formId}</span>
+                  <button className="go" onClick={() => quickOpen(p)} disabled={busy}>เปิดฟอร์มเลย</button>
                   <button className="x" title="ลบ" onClick={() => remove(p.name)} disabled={busy}>×</button>
                 </div>
               ))}
@@ -269,6 +331,13 @@ export default function App() {
           {schema && (
             <>
               <h2>{schema.title}</h2>
+
+              {issues.length > 0 && (
+                <div className="warn">
+                  preset นี้ไม่ตรงกับฟอร์มปัจจุบัน — Google จะไม่กรอกค่าเหล่านี้ให้ แก้แล้วกดบันทึก preset ใหม่:
+                  <ul>{issues.map((i) => <li key={i}>{i}</li>)}</ul>
+                </div>
+              )}
 
               <div className="presets">
                 {forThisForm.map((p) => (
